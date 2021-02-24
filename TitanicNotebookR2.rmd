@@ -1,0 +1,697 @@
+---
+title: "Titanic Machine Learning with R"
+subtitle: Lucas Torres Valiente
+output:
+  pdf_document:
+    toc: yes
+header-includes:
+- \usepackage{makeidx}
+- \makeindex
+---
+
+
+
+
+
+The following notebook is intended to solve the problem Titanic - Machine Learning from Disaster by Kaggle.
+
+The main objective is Predict survival on the Titanic and get familiar with ML basics.
+
+Note: Algorithms definitions are from Wikipedia
+
+\pagebreak
+
+# Introduction
+
+```{r,message = FALSE, warning = FALSE}
+#Necessary Packages 
+
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ROCR)
+library(randomForest)
+library(e1071)
+library(hrbrthemes)
+library(ggplot2)
+library(dplyr)
+library(class)
+library(kernlab)
+library(extrafont)
+
+#Seed
+
+set.seed(2021)
+```
+
+## Data importation
+
+```{r}
+train <- read.csv("C:/Users/PC/Desktop/PROG/Machine Learning/Titanic/train.csv", 
+                  na.strings = "")
+test <- read.csv("C:/Users/PC/Desktop/PROG/Machine Learning/Titanic/test.csv",
+                 na.strings = "")
+gender_submission <- 
+  read.csv("C:/Users/PC/Desktop/PROG/Machine Learning/Titanic/gender_submission.csv")
+
+```
+
+```{r,message = FALSE, warning = FALSE}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff = 45),tidy = TRUE)
+```
+
+## Exploratory Data Analysis and Data transformation
+
+```{r}
+
+head(train)
+```
+\pagebreak
+
++----------+---------------------------------------------+------------------------------------------------+
+| Variable | Definition                                  | Key                                            |
++==========+=============================================+================================================+
+| survival | Survival                                    | 0 = No, 1 = Yes                                |
++----------+---------------------------------------------+------------------------------------------------+
+| pclass   | Ticket class                                | 1 = 1st, 2 = 2nd, 3 = 3rd                      |
++----------+---------------------------------------------+------------------------------------------------+
+| sex      | Sex                                         |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| Age      | Age in years                                |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| sibsp    | \# of siblings / spouses aboard the Titanic |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| parch    | \# of parents / children aboard the Titanic |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| ticket   | Ticket number                               |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| fare     | Passenger fare                              |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| cabin    | Cabin number                                |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+| embarked | Port of Embarkation                         | C = Cherbourg, Q = Queenstown, S = Southampton |
++----------+---------------------------------------------+------------------------------------------------+
+|          |                                             |                                                |
++----------+---------------------------------------------+------------------------------------------------+
+
+: Data Dictionary
+
+**Variable Notes:**
+
+-   **pclass**: A proxy for socio-economic status (SES)\
+    1st = Upper\
+    2nd = Middle\
+    3rd = Lower
+
+-   **age**: Age is fractional if less than 1. If the age is estimated, is it in the form of xx.5
+
+-   **sibsp**: The dataset defines family relations in this way...\
+    Sibling = brother, sister, stepbrother, stepsister\
+    Spouse = husband, wife (mistresses and fiancés were ignored)
+
+-   **parch**: The dataset defines family relations in this way...\
+    Parent = mother, father\
+    Child = daughter, son, stepdaughter, stepson\
+    Some children travelled only with a childcarer, therefore parch=0 for them.\
+
+Let's create new variables from the existing ones and edit some variables
+
+```{r}
+
+train$Child <- ifelse(train$Age < 18,1,0)
+train$Child <- factor(train$Child)
+
+train$family_size <- train$SibSp + train$Parch + 1
+
+train$Title <- substring(train$Name,regexpr(",",train$Name)+2,regexpr("\\.",train$Name)-1)
+
+train$Title[train$Title %in% c("Capt","Don","Major","Col",
+                               "Rev","Dr","Sir","Mr","Jonkheer")] <- "man"
+train$Title[train$Title %in% c("Dona","the Countess","Mme","Mlle",
+                               "Ms","Miss","Lady","Mrs")] <- "woman"
+train$Title[train$Title %in% c("Master")] <- "boy"
+
+
+
+
+test$Child <- ifelse(test$Age < 18,1,0)
+test$Child <- factor(test$Child)
+
+test$family_size <- test$SibSp + test$Parch + 1
+
+test$Title <- substring(test$Name,regexpr(",",test$Name)+2,regexpr("\\.",test$Name)-1)
+test$Title[test$Title %in% c("Capt","Don","Major","Col",
+                             "Rev","Dr","Sir","Mr","Jonkheer")] <- "man"
+test$Title[test$Title %in% c("Dona","the Countess","Mme","Mlle",
+                             "Ms","Miss","Lady","Mrs")] <- "woman"
+test$Title[test$Title %in% c("Master")] <- "boy"
+
+train$Title <- factor(train$Title)
+test$Title <- factor(test$Title)
+
+test$Survived <- 0
+
+train$Survived <- factor(train$Survived)
+test$Survived <- factor(test$Survived)
+train$Pclass <- factor(train$Pclass)
+test$Pclass <- factor(test$Pclass)
+
+test$Sex <- factor(test$Sex)
+train$Sex <- factor(train$Sex)
+
+test$Embarked <- factor(test$Embarked)
+train$Embarked <- factor(train$Embarked)
+```
+
+The new variables are:
+
+-   *Child:* Indicates if the passenger is a child or not
+
+-   *Family_size:* Indicates the family size, it's the sum of the number of siblings or spouses aboard the Titanic plus the number of parents and children
+
+-   *Title:* Indicates the title of the passenger
+
+\pagebreak
+
+Let's see how many missings are in the global data set
+
+```{r}
+merged_data <- merge(train,test,all = T)
+colSums(is.na(merged_data))
+
+```
+
+As we can see, there are a lot off missings in Cabin, Survived and Age, and to lesser extent in fare and embarked.
+
+The Survived missings are are expected, since the column "Survived" does not exist in the test dataset.
+
+-   Embarked Variable:
+
+```{r}
+table(merged_data$Embarked)
+
+
+```
+
+Since many passengers embarked at Southampton, we assign them the value S.
+
+```{r}
+which(is.na(merged_data$Embarked), arr.ind = TRUE)
+
+```
+
+```{r}
+merged_data$Embarked[c(62,830)] <- "S"
+
+```
+
+-   Fare Variable:
+
+Let's see the Fare distribution using a simple histogram:
+
+```{r}
+hist(merged_data$Fare)
+
+```
+
+Judging the histogram, the Fare distribution is totally skewed, so the median will be a better center position statistic than the mean.
+
+With Fisher's coefficient of skewness, we can see that the Fare distribution is positive skewed:\
+\
+$$g_1= \frac{m_3}{s^3} = \frac{\mathbb{E}[(X-\mu)^3]}{s^3} = \frac{\frac{1}{n} \sum_{i=i}^{n} (x_i-\bar{x})^3}{\frac{1}{n-1} [\sum_{i=i}^{n} (x_i-\bar{x})^2]^{3/2}} $$
+
+```{r}
+skewness(merged_data$Fare, na.rm = T, type = 3)
+```
+
+\
+[![](images/Relationship_between_mean_and_median_under_different_skewness.png "A general relationship of mean and median under differently skewed unimodal distribution")](Wikipedia)\
+
+```{r}
+which(is.na(merged_data$Fare), arr.ind = TRUE)
+
+```
+
+```{r}
+merged_data$Fare[1044] <- median(merged_data$Fare, na.rm = T)
+
+```
+
+-   Age Variable
+
+There are a lot of Age's missing values. We can make a prediction of a passenger's Age using the other variables and a decision tree model. The method will be "anova" since we are predicting a continuous variable.
+
+```{r}
+predicted_age <- rpart(Age ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + Title + 
+                         family_size + Child,
+                         data = merged_data[!is.na(merged_data$Age),], method = "anova")
+
+
+merged_data$Age[is.na(merged_data$Age)] <- 
+  predict(predicted_age, merged_data[is.na(merged_data$Age),])
+
+```
+
+Splitting the data back into a train set and a test set
+
+```{r}
+train <- merged_data[1:891,]
+test <- merged_data[892:1309,]
+
+```
+
+## Visualization
+
+Visualization is an important tool to provide insight. Nevertheless, it is rare to get the data in the exact format which is required. Often you'll need to create some new variables or summaries, or maybe you just want to rename the variables or reorder the observations in order to make the data a little easier to work with.
+
+```{r}
+table(train$Survived)
+round(prop.table(table(train$Survived)),3)
+table(train$Sex, train$Survived)
+
+```
+
+```{r}
+mosaicplot(Embarked ~ Survived, data = train, col = c("steelblue","limegreen"))
+
+```
+
+\pagebreak
+
+```{r}
+ggplot(train,aes(x=factor(Pclass),fill=factor(Sex)))+
+  geom_bar(position="dodge") + 
+  labs(x = "Class", y = "Sex", fill = "Sex")
+```
+
+\pagebreak
+
+```{r}
+ggplot(train,aes(x=factor(Pclass),fill=factor(Sex)))+
+  geom_bar(position="dodge")+
+  facet_grid(". ~ Survived") +
+  labs(x = "Class",fill = "Sex")
+```
+
+\pagebreak
+
+```{r}
+ggplot(train,aes(x=factor(Pclass),y=Age, fill = factor(Sex)))+
+  geom_boxplot() +
+  facet_wrap(~Survived) +
+  labs(x = "Class",fill = "Sex")
+
+```
+
+\pagebreak
+
+```{r}
+ggplot(train, aes(x=factor(Pclass), y=Age, fill= factor(Survived))) + 
+  geom_boxplot() +
+  facet_wrap(~Survived)+
+  labs(x = "Class", y = "Age", fill = "Survived")
+```
+
+\pagebreak
+
+```{r,message = FALSE, warning = FALSE}
+loadfonts()
+ggplot(train, aes(x=Age, y=Fare, color=Sex)) + 
+  geom_point(size=2) +
+  theme_ipsum() +
+  geom_jitter(width = 0.5, height = 0.5)
+```
+
+\pagebreak
+
+```{r,message = FALSE, warning = FALSE}
+ggplot(data=train, aes(x=Age, group=Survived, fill= factor(Survived))) +
+  geom_density(adjust=1.5, position="fill") +
+  theme_ipsum()+
+  labs(fill = "Survived")
+```
+
+\pagebreak
+
+
+# Decision Tree
+
+Decision tree learning is one of the predictive modelling approaches used in statistics, data mining and machine learning. It uses a decision tree (as a predictive model) to go from observations about an item (represented in the branches) to reach conclusions about the item's target value (represented in the leaves). Tree models where the target variable can take a discrete set of values are called classification trees; in these tree structures, leaves represent class labels and branches represent sets of features that lead to aforementioned class labels.
+
+```{r}
+DecisionTree <- rpart(Survived  ~ Pclass + Sex + Age + SibSp + Parch + Fare + 
+                        Embarked + Child + family_size + Title, data = train,
+             method = "class",
+             control = rpart.control(minsplit = 20,cp=0.01))
+
+DecisionTree
+```
+
+```{r}
+prp(DecisionTree, type = 2, extra = 104, nn = TRUE,
+    fallen.leaves = TRUE, faclen = 4, varlen = 8,
+    shadow.col = "gray")
+```
+
+\pagebreak
+
+```{r}
+prediction <- predict(DecisionTree, test,
+                       type = "class")
+
+prediction_prob <- predict(DecisionTree, test,
+                           type = "prob")
+```
+
+```{r}
+table(gender_submission$Survived, prediction, dnn = c("Actual", "Predicted"))
+
+
+pred <- prediction(prediction_prob[,2],prediction)
+
+perf <- performance(pred, "tpr", "fpr")
+plot(perf)
+
+```
+
+The confusion Matrix is:
+
+```{r}
+confusionMatrix(prediction, as.factor(gender_submission$Survived))
+table <- data.frame(confusionMatrix(prediction, as.factor(gender_submission$Survived))$table)
+plotTable <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+ggplot(data = plotTable, mapping = aes(x = Reference, y = Prediction, fill = goodbad, 
+                                       alpha = prop)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme_bw() +
+  xlim(rev(levels(table$Reference)))
+```
+
+
+Solution With Decision Tree
+
+```{r}
+solution1 <- data.frame(PassengerId = test$PassengerId, Survived = prediction)
+
+write.csv(solution1, file = "solution1.csv", row.names = F)
+
+```
+
+\pagebreak
+
+
+# Random Forest
+
+Random forests or random decision forests are an ensemble learning method for classification, regression and other tasks that operate by constructing a multitude of decision trees at training time and outputting the class that is the mode of the classes (classification) or mean/average prediction (regression) of the individual trees.
+
+```{r}
+randomForest <- randomForest(as.factor(Survived) ~ Pclass + Sex + 
+                    Age + SibSp + Parch + Fare + Embarked  + family_size  + Title,                     data=train, importance = TRUE, ntree=1000)
+```
+
+```{r}
+prediction <- predict(randomForest, test)
+prediction_prob <- predict(randomForest, test, type = "prob")
+
+prediction_prob <- as.data.frame(prediction_prob)
+
+head(prediction_prob)
+pred <- prediction(prediction_prob[,2],prediction)
+
+perf <- performance(pred,"tpr","fpr")
+plot(perf)
+```
+
+```{r}
+table(gender_submission$Survived, prediction, dnn = c("Actual", "Predicted"))
+
+```
+
+Solution with Random Forest
+
+```{r}
+solution2 <- data.frame(PassengerId = test$PassengerId,Survived=prediction)
+write.csv(solution2, file = "solution2.csv", row.names = F)
+
+```
+
+```{r}
+confusionMatrix(prediction, as.factor(gender_submission$Survived))
+table <- data.frame(confusionMatrix(prediction, as.factor(gender_submission$Survived))$table)
+plotTable <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+
+ggplot(data = plotTable, mapping = aes(x = Reference, y = Prediction, fill = goodbad, 
+                                       alpha = prop)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme_bw() +
+  xlim(rev(levels(table$Reference)))
+```
+
+\pagebreak
+
+
+# Support Vector Machine
+
+Support-vector machines are supervised learning models with associated learning algorithms that analyze data for classification and regression analysis.
+
+Given a set of training examples, each marked as belonging to one of two categories, an SVM training algorithm builds a model that assigns new examples to one category or the other, making it a non-probabilistic binary linear classifier (although methods such as Platt scaling exist to use SVM in a probabilistic classification setting).
+
+```{r}
+SVM <- svm(Survived ~ Pclass + Sex + Age + SibSp + Parch + 
+             Fare + Embarked  + family_size  + Title, data=train)
+```
+
+```{r}
+table(train$Survived, fitted(SVM), dnn = c("Actual", "Predicted")) 
+
+```
+
+```{r}
+prediction <- predict(SVM, test, type="class", na.action = na.pass)
+table(as.factor(gender_submission$Survived), prediction, dnn = c("Actual", "Predicted"))
+
+
+```
+
+```{r}
+confusionMatrix(prediction, as.factor(gender_submission$Survived))
+table <- data.frame(confusionMatrix(prediction, as.factor(gender_submission$Survived))$table)
+plotTable <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+ggplot(data = plotTable, mapping = aes(x = Reference, y = Prediction, fill = goodbad, 
+                                       alpha = prop)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme_bw() +
+  xlim(rev(levels(table$Reference)))
+```
+
+Solution with SVM:
+
+```{r}
+solution3 <- data.frame(PassengerId = test$PassengerId, Survived = prediction)
+write.csv(solution3, file = "solution3.csv", row.names = F)
+
+
+```
+
+\pagebreak
+
+
+# K-Nearest Neighbors
+
+The k-nearest neighbors algorithm (k-NN) is a non-parametric classification method. It is used for classification and regression. In both cases, the input consists of the k closest training examples in data set. The output depends on whether k-NN is used for classification or regression.
+
+-   In k-NN classification, the output is a class membership. An object is classified by a plurality vote of its neighbors, with the object being assigned to the most common class among its k nearest neighbors (k is a positive integer, typically small). If k = 1, then the object is simply assigned to the class of that single nearest neighbor.
+
+-   In k-NN regression, the output is the property value for the object. This value is the average of the values of k nearest neighbors.
+
+For this algorithm, it's necessary to normalize the values of each variable to the range 0:1 so that no variable's range has an unduly large impact on the distance measurement.
+
+Therefore, it will be necessary to apply the following formula:
+
+$$
+z=\frac{x-\max{\left(x\right)}}{\max{\left(x\right)-\min{\left(x\right)}}} 
+$$
+
+
+Briefly:
+
+-   Normalization makes training less sensitive to the scale of features, so we can better solve for coefficients
+
+-   The use of a normalization method will improve analysis from multiple models.
+
+    -   Additionally, if we were to use any algorithms on this data set before we normalized, it would be hard (potentially not possible) to converge the vectors because of the scaling issues. Normalization makes the data better conditioned for convergence.
+
+-   Normalizing will ensure that a convergence problem does not have a massive variance, making optimization feasible.
+
+```{r}
+
+train_z <- train
+test_z <- test
+
+
+train_z[,c("Age","SibSp","Parch","Fare","family_size")] <- scale(train[,c("Age","SibSp","Parch",
+                                                                          "Fare","family_size")])
+test_z[,c("Age","SibSp","Parch","Fare","family_size")] <- scale(test[,c("Age","SibSp","Parch",
+                                                                        "Fare","family_size")])
+
+```
+
+To apply correctly the algorithm, we must transform those variables treated as a factor into numeric variables.
+
+```{r}
+
+train_z$Sex <- as.numeric(train_z$Sex)
+train_z$Embarked <- as.numeric(train_z$Embarked)
+train_z$Title <- as.numeric(train_z$Title)
+
+test_z$Sex <- as.numeric(test_z$Sex)
+test_z$Embarked <- as.numeric(test_z$Embarked)
+test_z$Title <- as.numeric(test_z$Title)
+
+```
+
+$$
+\text{With}\ k = 1
+$$
+
+```{r}
+pred1 <- knn(train_z[,c("Pclass","Sex","Age","SibSp","Parch","Fare",
+                        "Embarked","family_size","Title")], 
+              test_z[,c("Pclass","Sex","Age","SibSp","Parch","Fare",
+                        "Embarked","family_size","Title")], 
+              train_z$Survived, 
+              k = 1)
+```
+
+The error matrix:
+
+```{r}
+errmat1 <- table(test_z$Survived, pred1, dnn = c("Actual","Predicted"))
+errmat1
+
+```
+
+Finding the best value for k:
+
+```{r}
+trcontrol <- trainControl(method = "repeatedcv",
+                          number = 10, 
+                          repeats = 3) 
+
+k_value <- train(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + 
+                   Embarked  + family_size  + Title,
+                       data = train_z,
+                       method = "knn",
+                       trControl = trcontrol, 
+                       preProcess = c("center", "scale"), 
+                       tuneLength = 10)
+k_value
+```
+
+```{r}
+pred <- knn(train_z[,c("Pclass","Sex","Age","SibSp","Parch","Fare",
+                       "Embarked","family_size","Title")], 
+              test_z[,c("Pclass","Sex","Age","SibSp","Parch","Fare",
+                        "Embarked","family_size","Title")], 
+              train_z$Survived, 
+              k = 11)
+```
+
+```{r}
+solution4 <- data.frame(PassengerId = test$PassengerId, Survived = pred)
+
+write.csv(solution4, file = "solution4.csv", row.names = F)
+
+```
+
+\pagebreak
+
+# Logistic Regression
+
+The logistic model is used to model the probability of a certain class or event existing such as pass/fail, win/lose, alive/dead or healthy/sick. This can be extended to model several classes of events such as determining whether an image contains a cat, dog, lion, etc. Each object being detected in the image would be assigned a probability between 0 and 1, with a sum of one.
+
+```{r}
+LogisticRegression <- glm(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked, family=binomial(link='logit'), data = train)
+summary(LogisticRegression)
+
+result <- predict(LogisticRegression,newdata=test,type='response')
+result <- ifelse(result > 0.5,1,0)
+
+confusionMatrix(data = as.factor(result), reference=test$Survived)
+
+```
+
+```{r}
+solution5 <- data.frame(PassengerId = test$PassengerId, Survived = result)
+
+write.csv(solution5, file = "solution5.csv", row.names = F)
+```
+
+\pagebreak
+
+# Accuracy Comparison
+
+```{r,message = FALSE, warning = FALSE}
+datasetTrain <- train[,c(-1, -4, -9, -11,-13)]
+
+summary(datasetTrain)
+
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+metric <- "Accuracy"
+
+fit.glm <- train(Survived~., data=datasetTrain, method="glm", metric=metric, trControl=trainControl)
+fit.knn <- train(Survived~., data=datasetTrain, method="knn", metric=metric, trControl=trainControl)
+fit.cart <- train(Survived~., data=datasetTrain, method="rpart", metric=metric,
+                  trControl=trainControl)
+fit.svm <- train(Survived~., data=datasetTrain, method="svmRadial", metric=metric,
+                 trControl=trainControl)
+results <- resamples(list(LG=fit.glm, KNN=fit.knn,
+                          CART=fit.cart, SVM=fit.svm))
+summary(results)
+
+dotplot(results)
+
+```
+
+The SVM algorithm has the highest accuracy
+
+\pagebreak
+
+# Bibliography
+
+-   Gomila Salas, J., 2018. *La técnica del Random Trees en Rstudio* [online] Youtube. Available at: <https://www.youtube.com/watch?v=oA0bHBEdMuw&list=PLLhrRW5wp33XkT-y4GXZrTSgx1Z1V3EA7&index=2> [Accessed February 2021].
+
+-   Gomila Salas, J., 2018. *La técnica del Random Forest en Rstudio* [online] Youtube. Available at: <https://www.youtube.com/watch?v=HJB6XFkmezM&list=PLLhrRW5wp33XkT-y4GXZrTSgx1Z1V3EA7&index=3> [Accessed February 2021].
+
+-   Salas, J., 2018. *Support Vector Machines en Rstudio*. [online] Youtube. Available at: <https://www.youtube.com/watch?v=_JdK4FMzd28&list=PLLhrRW5wp33XkT-y4GXZrTSgx1Z1V3EA7&index=4> [Accessed February 2021].
+
+-   Salas, J., 2018. *K Nearest Neighbors en RStudio*. [online] Youtube. Available at: <https://www.youtube.com/watch?v=9C6HI_CyRG4&list=PLLhrRW5wp33XkT-y4GXZrTSgx1Z1V3EA7&index=5> [Accessed February 2021].
+
+-   Berrendero, J., 2016. *RPubs - Introducción al paquete Caret*. [online] Rpubs.com. Available at: <https://rpubs.com/joser/caret> [Accessed February 2021].
+
+-   Ononse Bisong, E., 2016. *RPubs - Titanic Machine Learning from Disaster: How to evaluate Algorithms*. [online] Rpubs.com. Available at: <https://rpubs.com/dvdbisong/titanic> [Accessed February 2021].
+
+-   Stack Overflow. 2019. *Plot confusion matrix in R using ggplot*. [online] Available at: <https://stackoverflow.com/questions/37897252/plot-confusion-matrix-in-r-using-ggplot/37897416> [Accessed February 2021].
+
+-   DeFilippi, R., 2018. *Standardize or Normalize? --- Examples in Python*. [online] Medium. Available at: [https://medium.com/\@rrfd/standardize-or-normalize-examples-in-python-e3f174b65dfc](https://medium.com/@rrfd/standardize-or-normalize-examples-in-python-e3f174b65dfc) [Accessed February 2021].
+
+-   Wickham, H., 2016. *R for Data Science: Visualize, Model, Transform, Tidy, and Import Data*. O'Reilly Media.
